@@ -134,7 +134,7 @@ function App() {
 								list: "/emergency",
 								create: "/emergency/create",
 								meta: {
-									label: "Emergency",
+									label: "Emergencies",
 									icon: <AlertTriangle className="w-4 h-4" />,
 								},
 							},

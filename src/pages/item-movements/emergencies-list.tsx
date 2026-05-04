@@ -424,7 +424,7 @@ const EmergencyMovementListPage = () => {
 
     return (
         <ListView>
-            <ListViewHeader title="Emergency" />
+            <ListViewHeader title="Emergencies" />
 
             <div className="grid gap-6 min-w-0">
                 <div className="intro-row">
