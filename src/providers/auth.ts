@@ -11,6 +11,24 @@ const normalizeAppRole = (value?: string | null): "admin" | "user" => {
 	return "user";
 };
 
+const getAppOrigin = () => {
+	if (typeof window !== "undefined") {
+		return window.location.origin;
+	}
+
+	return SITE_URL;
+};
+
+const getUpdatePasswordRedirectUrl = () => {
+	const baseUrl = getAppOrigin();
+
+	if (!baseUrl) {
+		return undefined;
+	}
+
+	return `${baseUrl.replace(/\/$/, "")}/update-password`;
+};
+
 export const authProvider: AuthProvider = {
 	login: async ({ email, password, providerName, rememberMe }) => {
 		// sign in with oauth
@@ -142,10 +160,11 @@ export const authProvider: AuthProvider = {
 	},
 	forgotPassword: async ({ email }) => {
 		try {
-			const baseUrl = SITE_URL || window.location.origin;
-			const { data, error } = await supabaseClient.auth.resetPasswordForEmail(email, {
-				redirectTo: `${baseUrl.replace(/\/$/, "")}/update-password`,
-			});
+			const redirectTo = getUpdatePasswordRedirectUrl();
+			const { data, error } = await supabaseClient.auth.resetPasswordForEmail(
+				String(email ?? "").trim(),
+				redirectTo ? { redirectTo } : undefined,
+			);
 
 			if (error) {
 				return {
