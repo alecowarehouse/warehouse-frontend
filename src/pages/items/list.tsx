@@ -33,7 +33,6 @@ import { useItemImport } from "@/hooks/use-item-import";
 import { ItemImportPanel } from "@/components/items/item-import-panel";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useUpdate } from "@refinedev/core";
 import { supabaseClient } from "@/providers/supabase-client";
 
