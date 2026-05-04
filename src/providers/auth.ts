@@ -12,11 +12,15 @@ const normalizeAppRole = (value?: string | null): "admin" | "user" => {
 };
 
 const getAppOrigin = () => {
+	if (SITE_URL) {
+		return SITE_URL;
+	}
+
 	if (typeof window !== "undefined") {
 		return window.location.origin;
 	}
 
-	return SITE_URL;
+	return undefined;
 };
 
 const getUpdatePasswordRedirectUrl = () => {
@@ -159,10 +163,22 @@ export const authProvider: AuthProvider = {
 		};
 	},
 	forgotPassword: async ({ email }) => {
+		const normalizedEmail = String(email ?? "").trim();
+
+		if (!normalizedEmail) {
+			return {
+				success: false,
+				error: {
+					message: "Enter the email address for your account.",
+					name: "Email is required",
+				},
+			};
+		}
+
 		try {
 			const redirectTo = getUpdatePasswordRedirectUrl();
 			const { data, error } = await supabaseClient.auth.resetPasswordForEmail(
-				String(email ?? "").trim(),
+				normalizedEmail,
 				redirectTo ? { redirectTo } : undefined,
 			);
 

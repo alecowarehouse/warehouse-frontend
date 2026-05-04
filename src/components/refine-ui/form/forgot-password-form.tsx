@@ -50,17 +50,29 @@ export const ForgotPasswordForm = () => {
   const handleForgotPassword = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
+    const normalizedEmail = email.trim();
+
     forgotPassword(
       {
-        email,
+        email: normalizedEmail,
       },
       {
-        onSuccess: () => {
+        onSuccess: (result) => {
+          if (result?.success) {
+            open?.({
+              type: "success",
+              message: "Reset link sent",
+              description:
+                "If an account exists for this email, a password reset link has been sent.",
+            });
+            return;
+          }
+
           open?.({
-            type: "success",
-            message: "Reset link sent",
+            type: "error",
+            message: "Failed to send reset link",
             description:
-              "If an account exists for this email, a password reset link has been sent.",
+              result?.error?.message || "Please check the email and try again.",
           });
         },
         onError: (error) => {
