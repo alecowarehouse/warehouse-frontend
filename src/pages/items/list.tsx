@@ -1,5 +1,5 @@
 import { ListView, ListViewHeader } from "@/components/refine-ui/views/list-view";
-import { Search, Plus, FileSpreadsheet, Pencil, Loader2, RefreshCw, History, Trash } from "lucide-react";
+import { Search, Plus, FileSpreadsheet, Pencil, Loader2, RefreshCw, History, Trash, Printer } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -51,6 +51,10 @@ const MONTH_TO_NUMBER: Record<string, number> = {
     November: 11,
     December: 12,
 };
+
+const MONTH_NUMBER_TO_NAME = Object.fromEntries(
+    Object.entries(MONTH_TO_NUMBER).map(([month, number]) => [number, month])
+) as Record<number, string>;
 
 const ITEMS_LIST_FILTERS_STORAGE_KEY = "items-list-filters";
 const ITEMS_LIST_FILTERS_USER_KEY = "items-list-filters-user";
@@ -157,6 +161,8 @@ type ItemImportPreview = {
     errors: ImportParseError[];
 };
 
+type ExportFormat = "pdf" | "excel";
+
 const isUuidLike = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
 const getDefaultMonth = () => new Date().toLocaleString("en-US", { month: "long" });
@@ -225,6 +231,43 @@ const formatMoney = (value: number | null | undefined) => {
         minimumFractionDigits: 2,
         maximumFractionDigits: 2,
     });
+};
+
+const formatExportNumber = (value: number | null | undefined) => {
+    if (value == null || Number.isNaN(value)) return "";
+    return value;
+};
+
+const escapeHtml = (value: string | number | null | undefined) =>
+    String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+
+const sanitizeFileName = (value: string) =>
+    value
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+const getInventoryReportTitle = (selectedYear: string, selectedMonth: string, selectedType: string) => {
+    const typeLabel = selectedType === "all" ? "" : ` - ${selectedType}`;
+
+    if (selectedYear === "all" && selectedMonth === "all") {
+        return `Items - All Dates${typeLabel}`;
+    }
+
+    if (selectedYear === "all") {
+        return `Items for ${selectedMonth} (All Years)${typeLabel}`;
+    }
+
+    if (selectedMonth === "all") {
+        return `Items for ${selectedYear}${typeLabel}`;
+    }
+
+    return `Items as of ${selectedMonth} ${selectedYear}${typeLabel}`;
 };
 
 const normalizeImportHeader = (value: string) =>
@@ -424,6 +467,16 @@ const ItemList = () => {
     const [isPreparingImport, setIsPreparingImport] = useState(false);
     const [isImportingItems, setIsImportingItems] = useState(false);
     const [isRolloverRunning, setIsRolloverRunning] = useState(false);
+    const [exportDialogOpen, setExportDialogOpen] = useState(false);
+    const [exportMonth, setExportMonth] = useState(() =>
+        initialFilters?.selectedMonth ?? getDefaultMonth()
+    );
+    const [exportYear, setExportYear] = useState<string>(
+        initialFilters?.selectedYear ?? getDefaultYear()
+    );
+    const [exportType, setExportType] = useState("all");
+    const [exportFormat, setExportFormat] = useState<ExportFormat>("pdf");
+    const [isExportingItems, setIsExportingItems] = useState(false);
     const { importFile, setImportFile, handleDialogOpenChange, hasImportFile } =
         useItemImport();
     const { open } = useNotification();
@@ -1059,6 +1112,264 @@ const ItemList = () => {
     });
     const columnFilters = itemTable.reactTable.getState().columnFilters;
 
+    const openExportDialog = useCallback(() => {
+        const typeFilterValue = columnFilters.find((filter) => filter.id === "type")?.value;
+        setExportMonth(selectedMonth);
+        setExportYear(selectedYear);
+        setExportType(typeof typeFilterValue === "string" && typeFilterValue ? typeFilterValue : "all");
+        setExportFormat("pdf");
+        setExportDialogOpen(true);
+    }, [columnFilters, selectedMonth, selectedYear]);
+
+    const getExportRows = useCallback(async () => {
+        let query = supabaseClient
+            .from("items_inventory_all")
+            .select("id,item_code,description,type,month,year,unit_cost,starting_qty,buffer_stock,ending_qty");
+
+        if (exportYear !== "all") {
+            query = query.eq("year", Number(exportYear));
+        }
+
+        if (exportMonth !== "all") {
+            const monthNumber = MONTH_TO_NUMBER[exportMonth];
+            if (monthNumber) {
+                query = query.eq("month", monthNumber);
+            }
+        }
+
+        if (exportType !== "all") {
+            query = query.eq("type", exportType);
+        }
+
+        const { data, error } = await query.order("item_code", { ascending: true });
+        if (error) throw error;
+        return (data ?? []) as ItemInventoryRowWithId[];
+    }, [exportMonth, exportType, exportYear]);
+
+    const exportItemsToExcel = useCallback((rows: ItemInventoryRowWithId[], title: string) => {
+        const worksheetRows = [
+            [title],
+            [],
+            [
+                "Item Code",
+                "Description",
+                "Type/UOM",
+                "Unit Cost",
+                "Buffer Stock",
+                "Starting Qty.",
+                "Ending Qty.",
+            ],
+            ...rows.map((item) => [
+                item.item_code ?? "",
+                item.description ?? "",
+                item.type ?? "",
+                formatExportNumber(item.unit_cost),
+                formatExportNumber(item.buffer_stock),
+                formatExportNumber(item.starting_qty),
+                formatExportNumber(item.ending_qty),
+            ]),
+        ];
+        const worksheet = XLSX.utils.aoa_to_sheet(worksheetRows);
+        worksheet["!merges"] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }];
+        worksheet["!cols"] = [
+            { wch: 16 },
+            { wch: 52 },
+            { wch: 14 },
+            { wch: 14 },
+            { wch: 14 },
+            { wch: 14 },
+            { wch: 14 },
+        ];
+
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, "Inventory Items");
+        XLSX.writeFile(workbook, `${sanitizeFileName(title) || "inventory-items"}.xlsx`);
+    }, []);
+
+    const exportItemsToPdf = useCallback((rows: ItemInventoryRowWithId[], title: string) => {
+        const generatedAt = new Date().toLocaleString("en-US", {
+            month: "short",
+            day: "2-digit",
+            year: "numeric",
+            hour: "2-digit",
+            minute: "2-digit",
+        });
+        const bodyRows = rows.map((item) => `
+            <tr>
+                <td>${escapeHtml(item.item_code)}</td>
+                <td>${escapeHtml(item.description)}</td>
+                <td>${escapeHtml(item.type)}</td>
+                <td class="num">${escapeHtml(formatMoney(item.unit_cost))}</td>
+                <td class="num">${escapeHtml(formatNumber(item.buffer_stock))}</td>
+                <td class="num">${escapeHtml(formatNumber(item.starting_qty))}</td>
+                <td class="num">${escapeHtml(formatNumber(item.ending_qty))}</td>
+            </tr>
+        `).join("");
+
+        const reportHtml = `
+            <!doctype html>
+            <html>
+                <head>
+                    <title>${escapeHtml(title)}</title>
+                    <style>
+                        * { box-sizing: border-box; }
+                        body {
+                            margin: 32px;
+                            color: #111827;
+                            font-family: Arial, sans-serif;
+                            font-size: 12px;
+                        }
+                        header {
+                            margin-bottom: 18px;
+                            border-bottom: 1px solid #d1d5db;
+                            padding-bottom: 12px;
+                        }
+                        h1 {
+                            margin: 0 0 6px;
+                            font-size: 22px;
+                            line-height: 1.2;
+                        }
+                        .meta {
+                            color: #4b5563;
+                            font-size: 11px;
+                        }
+                        table {
+                            width: 100%;
+                            border-collapse: collapse;
+                        }
+                        th, td {
+                            border: 1px solid #d1d5db;
+                            padding: 6px 7px;
+                            text-align: left;
+                            vertical-align: top;
+                        }
+                        th {
+                            background: #f3f4f6;
+                            font-weight: 700;
+                        }
+                        .num {
+                            text-align: right;
+                            white-space: nowrap;
+                        }
+                        .empty {
+                            border: 1px solid #d1d5db;
+                            padding: 16px;
+                            text-align: center;
+                            color: #4b5563;
+                        }
+                        @media print {
+                            @page {
+                                size: landscape;
+                                margin: 0;
+                            }
+                            body {
+                                margin: 0;
+                                padding: 12mm;
+                            }
+                            thead { display: table-header-group; }
+                            tr { page-break-inside: avoid; }
+                        }
+                    </style>
+                </head>
+                <body>
+                    <header>
+                        <h1>${escapeHtml(title)}</h1>
+                        <div class="meta">Generated ${escapeHtml(generatedAt)} · ${rows.length} item${rows.length === 1 ? "" : "s"}</div>
+                    </header>
+                    ${rows.length > 0 ? `
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Item Code</th>
+                                    <th>Description</th>
+                                    <th>Type/UOM</th>
+                                    <th>Unit Cost</th>
+                                    <th>Buffer Stock</th>
+                                    <th>Starting Qty.</th>
+                                    <th>Ending Qty.</th>
+                                </tr>
+                            </thead>
+                            <tbody>${bodyRows}</tbody>
+                        </table>
+                    ` : `<div class="empty">No inventory items matched the selected range.</div>`}
+                </body>
+            </html>
+        `;
+
+        const existingFrame = document.getElementById("inventory-items-print-frame");
+        existingFrame?.remove();
+
+        const frame = document.createElement("iframe");
+        frame.id = "inventory-items-print-frame";
+        frame.title = title;
+        frame.style.position = "fixed";
+        frame.style.right = "0";
+        frame.style.bottom = "0";
+        frame.style.width = "0";
+        frame.style.height = "0";
+        frame.style.border = "0";
+        frame.style.visibility = "hidden";
+        document.body.appendChild(frame);
+
+        const frameWindow = frame.contentWindow;
+        const frameDocument = frameWindow?.document;
+        if (!frameWindow || !frameDocument) {
+            frame.remove();
+            throw new Error("Unable to prepare the print report.");
+        }
+
+        frameDocument.open();
+        frameDocument.write(reportHtml);
+        frameDocument.close();
+
+        window.setTimeout(() => {
+            frameWindow.focus();
+            frameWindow.print();
+            window.setTimeout(() => frame.remove(), 1000);
+        }, 250);
+    }, []);
+
+    const handleExportItems = useCallback(async () => {
+        if (isExportingItems) return;
+
+        setIsExportingItems(true);
+        try {
+            const rows = await getExportRows();
+            const title = getInventoryReportTitle(exportYear, exportMonth, exportType);
+
+            if (exportFormat === "excel") {
+                exportItemsToExcel(rows, title);
+            } else {
+                exportItemsToPdf(rows, title);
+            }
+
+            setExportDialogOpen(false);
+            open?.({
+                type: "success",
+                message: exportFormat === "excel" ? "Excel report created" : "Print report opened",
+                description: `${rows.length} item${rows.length === 1 ? "" : "s"} included.`,
+            });
+        } catch (error) {
+            open?.({
+                type: "error",
+                message: "Export failed",
+                description: getErrorMessage(error),
+            });
+        } finally {
+            setIsExportingItems(false);
+        }
+    }, [
+        exportFormat,
+        exportItemsToExcel,
+        exportItemsToPdf,
+        exportMonth,
+        exportType,
+        exportYear,
+        getExportRows,
+        isExportingItems,
+        open,
+    ]);
+
     const resetItemImportPreview = useCallback(() => {
         setItemImportPreview(null);
         setItemImportPreviewError(null);
@@ -1583,6 +1894,125 @@ const ItemList = () => {
                                     ))}
                                 </SelectContent>
                             </Select>
+
+                            <Dialog open={exportDialogOpen} onOpenChange={setExportDialogOpen}>
+                                <DialogTrigger asChild>
+                                    <Button type="button" variant="outline" onClick={openExportDialog}>
+                                        <Printer className="w-4 h-4" />
+                                        <span>Print / Export</span>
+                                    </Button>
+                                </DialogTrigger>
+                                <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl p-4 sm:p-6">
+                                    <DialogHeader>
+                                        <DialogTitle>Print Inventory Items</DialogTitle>
+                                        <DialogDescription>
+                                            Choose the inventory range and file format for the report.
+                                        </DialogDescription>
+                                    </DialogHeader>
+
+                                    <div className="grid gap-4 py-2">
+                                        <div className="grid gap-4 sm:grid-cols-2">
+                                            <div className="grid gap-1.5">
+                                                <p className="text-sm font-medium">Year</p>
+                                                <Select value={exportYear} onValueChange={setExportYear}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Select year" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="all">All Years</SelectItem>
+                                                        {yearTabs.map((year) => (
+                                                            <SelectItem key={year} value={String(year)}>
+                                                                {year}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+
+                                            <div className="grid gap-1.5">
+                                                <p className="text-sm font-medium">Month</p>
+                                                <Select value={exportMonth} onValueChange={setExportMonth}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Select month" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="all">All Months</SelectItem>
+                                                        {MONTHS_OPTIONS.map((month) => (
+                                                            <SelectItem key={month.value} value={month.value}>
+                                                                {month.label}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+
+                                            <div className="grid gap-1.5">
+                                                <p className="text-sm font-medium">Item Type / UOM</p>
+                                                <Select value={exportType} onValueChange={setExportType}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Select item type" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="all">All Types</SelectItem>
+                                                        {typeOptions.map((type) => (
+                                                            <SelectItem key={type} value={type}>
+                                                                {type}
+                                                            </SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+
+                                            <div className="grid gap-1.5">
+                                                <p className="text-sm font-medium">Output</p>
+                                                <Select value={exportFormat} onValueChange={(value) => setExportFormat(value as ExportFormat)}>
+                                                    <SelectTrigger>
+                                                        <SelectValue placeholder="Select output" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        <SelectItem value="pdf">PDF</SelectItem>
+                                                        <SelectItem value="excel">Excel</SelectItem>
+                                                    </SelectContent>
+                                                </Select>
+                                            </div>
+                                        </div>
+
+                                        <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                                            <p className="font-medium text-foreground">
+                                                {getInventoryReportTitle(exportYear, exportMonth, exportType)}
+                                            </p>
+                                            <p className="text-xs text-muted-foreground">
+                                                This header will be used in the generated report.
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <DialogFooter>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            onClick={() => setExportDialogOpen(false)}
+                                            disabled={isExportingItems}
+                                        >
+                                            Cancel
+                                        </Button>
+                                        <Button
+                                            type="button"
+                                            onClick={() => void handleExportItems()}
+                                            disabled={isExportingItems}
+                                        >
+                                            {isExportingItems ? (
+                                                <span className="inline-flex items-center gap-2">
+                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                    Preparing
+                                                </span>
+                                            ) : (
+                                                "Generate"
+                                            )}
+                                        </Button>
+                                    </DialogFooter>
+                                </DialogContent>
+                            </Dialog>
 
                             <Dialog
                                 open={importDialogOpen}
