@@ -580,7 +580,7 @@ const EmergencyMovementCreatePage = () => {
                                     <Input
                                         value={header.requisitioner}
                                         onChange={(event) => setHeader((prev) => ({ ...prev, requisitioner: event.target.value }))}
-                                        placeholder="Enter requisitioner"
+                                        placeholder="Enter Requisitioner"
                                         className="bg-background"
                                     />
                                 </div>
@@ -589,7 +589,7 @@ const EmergencyMovementCreatePage = () => {
                                     <Input
                                         value={header.relNumber}
                                         onChange={(event) => setHeader((prev) => ({ ...prev, relNumber: event.target.value }))}
-                                        placeholder="Enter rel #"
+                                        placeholder="Enter Rel #"
                                         className="bg-background"
                                     />
                                 </div>
@@ -598,7 +598,7 @@ const EmergencyMovementCreatePage = () => {
                                     <Input
                                         value={header.purpose}
                                         onChange={(event) => setHeader((prev) => ({ ...prev, purpose: event.target.value }))}
-                                        placeholder="Enter purpose"
+                                        placeholder="Enter Purpose"
                                         className="bg-background"
                                     />
                                 </div>
