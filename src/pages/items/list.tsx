@@ -35,6 +35,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Textarea } from "@/components/ui/textarea";
 import { useUpdate } from "@refinedev/core";
 import { supabaseClient } from "@/providers/supabase-client";
+import * as XLSX from "xlsx";
 
 const MONTH_TO_NUMBER: Record<string, number> = {
     January: 1,
@@ -139,6 +140,22 @@ type ItemHistoryChangeEntry = {
     isRollback?: boolean;
 };
 
+type ImportedInventoryItem = {
+    item_code: string;
+    description: string;
+    type: string;
+    unit_cost: number | null;
+};
+
+type ImportParseError = {
+    rowNumber: number;
+    message: string;
+};
+
+type ItemImportPreview = {
+    items: ImportedInventoryItem[];
+    errors: ImportParseError[];
+};
 
 const isUuidLike = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
@@ -210,6 +227,152 @@ const formatMoney = (value: number | null | undefined) => {
     });
 };
 
+const normalizeImportHeader = (value: string) =>
+    value
+        .toLowerCase()
+        .replace(/\s+/g, "")
+        .replace(/[^a-z0-9]/g, "");
+
+const parseImportNumber = (value: string) => {
+    if (!value) return null;
+    const sanitized = value.replace(/[,\s]/g, "").replace(/[^0-9.+-]/g, "");
+    if (!sanitized) return null;
+    const parsed = Number(sanitized);
+    return Number.isFinite(parsed) ? parsed : null;
+};
+
+const ITEM_IMPORT_HEADER_MAP: Record<string, keyof ImportedInventoryItem> = {
+    itemcode: "item_code",
+    assetnameparticulars: "description",
+    assetname: "description",
+    particulars: "description",
+    description: "description",
+    unit: "type",
+    type: "type",
+    unitcost: "unit_cost",
+    unitcostphp: "unit_cost",
+};
+
+const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPreview => {
+    const normalizedRows = rows
+        .map((row, index) => ({
+            rowNumber: index + 1,
+            cells: row.map((cell) => String(cell ?? "").trim()),
+        }))
+        .filter(({ cells }) => cells.some((cell) => cell.length > 0));
+
+    const headerInfo = normalizedRows
+        .slice(0, 25)
+        .map(({ cells }, rowIndex) => {
+            const headerMap = cells.map((cell) => ITEM_IMPORT_HEADER_MAP[normalizeImportHeader(cell)] ?? null);
+            const mappedHeaders = new Set(headerMap.filter(Boolean));
+            return {
+                rowIndex,
+                headerMap,
+                hasRequiredHeaders:
+                    mappedHeaders.has("item_code") &&
+                    mappedHeaders.has("description") &&
+                    mappedHeaders.has("type"),
+            };
+        })
+        .find((entry) => entry.hasRequiredHeaders);
+
+    if (!headerInfo) {
+        throw new Error("Could not find required headers: Item Code, Asset Name/Particulars, and Unit.");
+    }
+
+    const itemsByCode = new Map<string, ImportedInventoryItem>();
+    const errors: ImportParseError[] = [];
+
+    for (let i = headerInfo.rowIndex + 1; i < normalizedRows.length; i += 1) {
+        const { rowNumber, cells } = normalizedRows[i];
+        const importedItem: ImportedInventoryItem = {
+            item_code: "",
+            description: "",
+            type: "",
+            unit_cost: null,
+        };
+        let hasMappedValue = false;
+        let unitCostParseError = false;
+
+        cells.forEach((cell, colIndex) => {
+            const key = headerInfo.headerMap[colIndex];
+            if (!key || !cell) return;
+            hasMappedValue = true;
+            if (key === "unit_cost") {
+                importedItem.unit_cost = parseImportNumber(cell);
+                unitCostParseError = importedItem.unit_cost == null;
+            } else {
+                importedItem[key] = cell;
+            }
+        });
+
+        const itemCode = importedItem.item_code.trim().toUpperCase();
+        const description = importedItem.description.trim();
+        const type = importedItem.type.trim();
+
+        if (!hasMappedValue) continue;
+
+        if (!itemCode || !description || !type) {
+            errors.push({
+                rowNumber,
+                message: "Missing item code, asset name/particulars, or unit.",
+            });
+            continue;
+        }
+
+        if (unitCostParseError) {
+            errors.push({
+                rowNumber,
+                message: "Invalid unit cost.",
+            });
+            continue;
+        }
+
+        if (itemsByCode.has(itemCode)) {
+            errors.push({
+                rowNumber,
+                message: `Duplicate item code ${itemCode}.`,
+            });
+            continue;
+        }
+
+        itemsByCode.set(itemCode, {
+            item_code: itemCode,
+            description,
+            type,
+            unit_cost: importedItem.unit_cost,
+        });
+    }
+
+    return {
+        items: Array.from(itemsByCode.values()),
+        errors,
+    };
+};
+
+const readItemImportPreview = async (file: File): Promise<ItemImportPreview> => {
+    const workbook = XLSX.read(await file.arrayBuffer(), {
+        type: "array",
+        cellDates: false,
+    });
+    const firstSheetName = workbook.SheetNames[0];
+    const firstSheet = firstSheetName ? workbook.Sheets[firstSheetName] : null;
+
+    if (!firstSheet) {
+        throw new Error("The selected file does not contain a worksheet.");
+    }
+
+    const rows = XLSX.utils.sheet_to_json<Array<unknown>>(firstSheet, {
+        header: 1,
+        raw: false,
+        defval: "",
+        blankrows: false,
+    }) as Array<Array<unknown>>;
+
+    return parseImportedInventoryItems(rows);
+};
+
 const buildDateFilters = (
     selectedYear: string,
     selectedMonth: string
@@ -256,6 +419,10 @@ const ItemList = () => {
     const [editUnitCost, setEditUnitCost] = useState<number | "">("");
     const [editStartingQty, setEditStartingQty] = useState<number | "">("");
     const [editEndingQty, setEditEndingQty] = useState<number | "">("");
+    const [itemImportPreview, setItemImportPreview] = useState<ItemImportPreview | null>(null);
+    const [itemImportPreviewError, setItemImportPreviewError] = useState<string | null>(null);
+    const [isPreparingImport, setIsPreparingImport] = useState(false);
+    const [isImportingItems, setIsImportingItems] = useState(false);
     const [isRolloverRunning, setIsRolloverRunning] = useState(false);
     const { importFile, setImportFile, handleDialogOpenChange, hasImportFile } =
         useItemImport();
@@ -892,6 +1059,196 @@ const ItemList = () => {
     });
     const columnFilters = itemTable.reactTable.getState().columnFilters;
 
+    const resetItemImportPreview = useCallback(() => {
+        setItemImportPreview(null);
+        setItemImportPreviewError(null);
+    }, []);
+
+    const handleImportFileChange = useCallback(
+        (file: File | null) => {
+            resetItemImportPreview();
+            setImportFile(file);
+        },
+        [resetItemImportPreview, setImportFile]
+    );
+
+    const handlePrepareItemImport = useCallback(async () => {
+        if (!importFile || isPreparingImport) return;
+
+        setIsPreparingImport(true);
+        setItemImportPreviewError(null);
+        try {
+            const preview = await readItemImportPreview(importFile);
+            setItemImportPreview(preview);
+        } catch (error) {
+            setItemImportPreview(null);
+            setItemImportPreviewError(getErrorMessage(error));
+        } finally {
+            setIsPreparingImport(false);
+        }
+    }, [importFile, isPreparingImport]);
+
+    const handleImportItems = useCallback(async () => {
+        if (!itemImportPreview || isImportingItems) return;
+
+        setIsImportingItems(true);
+        try {
+            const importedItems = itemImportPreview.items;
+
+            if (importedItems.length === 0) {
+                throw new Error("There are no valid item rows to import.");
+            }
+
+            const itemCodes = importedItems.map((item) => item.item_code);
+            const { data: existingItems, error: existingItemsError } = await supabaseClient
+                .from("items")
+                .select("id,item_code")
+                .in("item_code", itemCodes);
+
+            if (existingItemsError) throw existingItemsError;
+
+            const existingByCode = new Map(
+                (existingItems ?? []).map((item) => [String(item.item_code).toUpperCase(), item])
+            );
+            const itemsToUpdate = importedItems.filter((item) => existingByCode.has(item.item_code));
+            const itemsToCreate = importedItems.filter((item) => !existingByCode.has(item.item_code));
+            const itemDetailsToCreate = itemsToCreate.map(({ item_code, description, type }) => ({
+                item_code,
+                description,
+                type,
+            }));
+
+            const updateResults = await Promise.all(
+                itemsToUpdate.map((item) => {
+                    const existingItem = existingByCode.get(item.item_code);
+                    return supabaseClient
+                        .from("items")
+                        .update({
+                            description: item.description,
+                            type: item.type,
+                        })
+                        .eq("id", existingItem?.id);
+                })
+            );
+            const updateError = updateResults.find((result) => result.error)?.error;
+            if (updateError) throw updateError;
+
+            let createdItems: Array<{ id: string | number; item_code: string }> = [];
+            if (itemsToCreate.length > 0) {
+                const { data, error } = await supabaseClient
+                    .from("items")
+                    .insert(itemDetailsToCreate)
+                    .select("id,item_code");
+
+                if (error) throw error;
+                createdItems = (data ?? []) as Array<{ id: string | number; item_code: string }>;
+            }
+
+            const importedByCode = new Map(importedItems.map((item) => [item.item_code, item]));
+            const importedByItemId = new Map<string, ImportedInventoryItem>();
+            (existingItems ?? []).forEach((item) => {
+                const importedItem = importedByCode.get(String(item.item_code).toUpperCase());
+                if (item.id != null && importedItem) {
+                    importedByItemId.set(String(item.id), importedItem);
+                }
+            });
+            createdItems.forEach((item) => {
+                const importedItem = importedByCode.get(String(item.item_code).toUpperCase());
+                if (item.id != null && importedItem) {
+                    importedByItemId.set(String(item.id), importedItem);
+                }
+            });
+
+            const allImportedItemIds = [
+                ...(existingItems ?? []).map((item) => item.id),
+                ...createdItems.map((item) => item.id),
+            ].filter((id): id is string | number => id != null);
+
+            if (allImportedItemIds.length > 0) {
+                const now = new Date();
+                const month = now.getMonth() + 1;
+                const year = now.getFullYear();
+                const { data: existingRecords, error: existingRecordsError } = await supabaseClient
+                    .from("inventory_records")
+                    .select("id,item_id")
+                    .eq("month", month)
+                    .eq("year", year)
+                    .in("item_id", allImportedItemIds);
+
+                if (existingRecordsError) throw existingRecordsError;
+
+                const unitCostUpdateResults = await Promise.all(
+                    (existingRecords ?? [])
+                        .filter((record) => importedByItemId.get(String(record.item_id))?.unit_cost != null)
+                        .map((record) =>
+                            supabaseClient
+                                .from("inventory_records")
+                                .update({
+                                    unit_cost: importedByItemId.get(String(record.item_id))?.unit_cost ?? null,
+                                })
+                                .eq("id", record.id)
+                        )
+                );
+                const unitCostUpdateError = unitCostUpdateResults.find((result) => result.error)?.error;
+                if (unitCostUpdateError) throw unitCostUpdateError;
+
+                const existingRecordItemIds = new Set(
+                    (existingRecords ?? []).map((record) => String(record.item_id))
+                );
+                const missingInventoryRecords = allImportedItemIds
+                    .filter((id) => !existingRecordItemIds.has(String(id)))
+                    .map((itemId) => ({
+                        item_id: itemId,
+                        month,
+                        year,
+                        starting_qty: 0,
+                        ending_qty: 0,
+                        buffer_stock: 0,
+                        unit_cost: importedByItemId.get(String(itemId))?.unit_cost ?? null,
+                    }));
+
+                if (missingInventoryRecords.length > 0) {
+                    const { error } = await supabaseClient
+                        .from("inventory_records")
+                        .insert(missingInventoryRecords);
+
+                    if (error) throw error;
+                }
+            }
+
+            open?.({
+                type: "success",
+                message: "Items imported",
+                description: `Imported ${importedItems.length} item${importedItems.length === 1 ? "" : "s"}.`,
+            });
+
+            handleDialogOpenChange(false);
+            resetItemImportPreview();
+            setImportDialogOpen(false);
+            itemTable.refineCore.setCurrentPage(1);
+            itemTable.refineCore.tableQuery.refetch();
+            invalidate({ resource: "items_inventory_all", invalidates: ["list"] });
+            invalidate({ resource: "inventory_records", invalidates: ["list"] });
+            invalidate({ resource: "items", invalidates: ["list"] });
+        } catch (error) {
+            open?.({
+                type: "error",
+                message: "Import failed",
+                description: getErrorMessage(error),
+            });
+        } finally {
+            setIsImportingItems(false);
+        }
+    }, [
+        handleDialogOpenChange,
+        invalidate,
+        isImportingItems,
+        itemImportPreview,
+        itemTable.refineCore,
+        open,
+        resetItemImportPreview,
+    ]);
+
     const handleDeleteItem = useCallback(async () => {
         const target = itemToDelete;
         if (!target) return;
@@ -1232,6 +1589,9 @@ const ItemList = () => {
                                 onOpenChange={(isOpen) => {
                                     setImportDialogOpen(isOpen);
                                     handleDialogOpenChange(isOpen);
+                                    if (!isOpen) {
+                                        resetItemImportPreview();
+                                    }
                                 }}
                             >
                                 <DialogTrigger asChild>
@@ -1243,16 +1603,65 @@ const ItemList = () => {
                                 <DialogContent className="w-[calc(100vw-2rem)] max-w-xl p-4 sm:p-6">
                                     <ItemImportPanel
                                         file={importFile}
-                                        onFileChange={setImportFile}
+                                        onFileChange={handleImportFileChange}
                                         onCancel={() => {
                                             handleDialogOpenChange(false);
+                                            resetItemImportPreview();
                                             setImportDialogOpen(false);
                                         }}
-                                        onContinue={() => {
-                                            handleDialogOpenChange(false);
-                                            setImportDialogOpen(false);
-                                        }}
-                                        continueDisabled={!hasImportFile}
+                                        onContinue={itemImportPreview ? handleImportItems : handlePrepareItemImport}
+                                        continueDisabled={
+                                            !hasImportFile ||
+                                            isPreparingImport ||
+                                            isImportingItems ||
+                                            (itemImportPreview ? itemImportPreview.items.length === 0 : false)
+                                        }
+                                        continueLabel={
+                                            isPreparingImport
+                                                ? "Checking..."
+                                                : isImportingItems
+                                                    ? "Importing..."
+                                                    : itemImportPreview
+                                                        ? "Import Items"
+                                                        : "Continue"
+                                        }
+                                        preview={
+                                            itemImportPreview || itemImportPreviewError ? (
+                                                <div className="rounded-md border bg-muted/20 p-3 text-sm">
+                                                    {itemImportPreview ? (
+                                                        <div className="space-y-3">
+                                                            <div className="grid grid-cols-2 gap-2">
+                                                                <div className="rounded-md border bg-background p-3">
+                                                                    <p className="text-xs text-muted-foreground">Successful imports</p>
+                                                                    <p className="text-2xl font-semibold">{itemImportPreview.items.length}</p>
+                                                                </div>
+                                                                <div className="rounded-md border bg-background p-3">
+                                                                    <p className="text-xs text-muted-foreground">Errors</p>
+                                                                    <p className="text-2xl font-semibold">{itemImportPreview.errors.length}</p>
+                                                                </div>
+                                                            </div>
+                                                            {itemImportPreview.errors.length > 0 ? (
+                                                                <div className="space-y-1 text-xs text-muted-foreground">
+                                                                    {itemImportPreview.errors.slice(0, 3).map((error) => (
+                                                                        <p key={`${error.rowNumber}-${error.message}`}>
+                                                                            Row {error.rowNumber}: {error.message}
+                                                                        </p>
+                                                                    ))}
+                                                                    {itemImportPreview.errors.length > 3 ? (
+                                                                        <p>
+                                                                            {itemImportPreview.errors.length - 3} more error
+                                                                            {itemImportPreview.errors.length - 3 === 1 ? "" : "s"}.
+                                                                        </p>
+                                                                    ) : null}
+                                                                </div>
+                                                            ) : null}
+                                                        </div>
+                                                    ) : (
+                                                        <p className="text-sm text-destructive">{itemImportPreviewError}</p>
+                                                    )}
+                                                </div>
+                                            ) : null
+                                        }
                                     />
                                 </DialogContent>
                             </Dialog>
