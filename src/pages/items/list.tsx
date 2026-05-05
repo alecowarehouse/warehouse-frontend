@@ -149,6 +149,7 @@ type ImportedInventoryItem = {
     description: string;
     type: string;
     unit_cost: number | null;
+    rowNumber: number;
 };
 
 type ImportParseError = {
@@ -334,6 +335,7 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             description: "",
             type: "",
             unit_cost: null,
+            rowNumber,
         };
         let hasMappedValue = false;
         let unitCostParseError = false;
@@ -345,7 +347,7 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             if (key === "unit_cost") {
                 importedItem.unit_cost = parseImportNumber(cell);
                 unitCostParseError = importedItem.unit_cost == null;
-            } else {
+            } else if (key === "item_code" || key === "description" || key === "type") {
                 importedItem[key] = cell;
             }
         });
@@ -385,6 +387,7 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             description,
             type,
             unit_cost: importedItem.unit_cost,
+            rowNumber,
         });
     }
 
@@ -414,6 +417,36 @@ const readItemImportPreview = async (file: File): Promise<ItemImportPreview> => 
     }) as Array<Array<unknown>>;
 
     return parseImportedInventoryItems(rows);
+};
+
+const appendExistingItemDuplicateErrors = async (preview: ItemImportPreview): Promise<ItemImportPreview> => {
+    if (preview.items.length === 0) return preview;
+
+    const itemCodes = preview.items.map((item) => item.item_code);
+    const { data, error } = await supabaseClient
+        .from("items")
+        .select("item_code")
+        .in("item_code", itemCodes);
+
+    if (error) throw error;
+
+    const existingCodes = new Set(
+        (data ?? []).map((item) => String(item.item_code ?? "").toUpperCase())
+    );
+
+    if (existingCodes.size === 0) return preview;
+
+    const duplicateErrors = preview.items
+        .filter((item) => existingCodes.has(item.item_code))
+        .map((item) => ({
+            rowNumber: item.rowNumber,
+            message: `Item code ${item.item_code} already exists.`,
+        }));
+
+    return {
+        items: preview.items.filter((item) => !existingCodes.has(item.item_code)),
+        errors: [...preview.errors, ...duplicateErrors].sort((a, b) => a.rowNumber - b.rowNumber),
+    };
 };
 
 const buildDateFilters = (
@@ -1389,7 +1422,8 @@ const ItemList = () => {
         setIsPreparingImport(true);
         setItemImportPreviewError(null);
         try {
-            const preview = await readItemImportPreview(importFile);
+            const parsedPreview = await readItemImportPreview(importFile);
+            const preview = await appendExistingItemDuplicateErrors(parsedPreview);
             setItemImportPreview(preview);
         } catch (error) {
             setItemImportPreview(null);
@@ -1421,28 +1455,20 @@ const ItemList = () => {
             const existingByCode = new Map(
                 (existingItems ?? []).map((item) => [String(item.item_code).toUpperCase(), item])
             );
-            const itemsToUpdate = importedItems.filter((item) => existingByCode.has(item.item_code));
-            const itemsToCreate = importedItems.filter((item) => !existingByCode.has(item.item_code));
+            const duplicateCodes = importedItems
+                .filter((item) => existingByCode.has(item.item_code))
+                .map((item) => item.item_code);
+
+            if (duplicateCodes.length > 0) {
+                throw new Error(`Duplicate item code${duplicateCodes.length === 1 ? "" : "s"} found: ${duplicateCodes.join(", ")}.`);
+            }
+
+            const itemsToCreate = importedItems;
             const itemDetailsToCreate = itemsToCreate.map(({ item_code, description, type }) => ({
                 item_code,
                 description,
                 type,
             }));
-
-            const updateResults = await Promise.all(
-                itemsToUpdate.map((item) => {
-                    const existingItem = existingByCode.get(item.item_code);
-                    return supabaseClient
-                        .from("items")
-                        .update({
-                            description: item.description,
-                            type: item.type,
-                        })
-                        .eq("id", existingItem?.id);
-                })
-            );
-            const updateError = updateResults.find((result) => result.error)?.error;
-            if (updateError) throw updateError;
 
             let createdItems: Array<{ id: string | number; item_code: string }> = [];
             if (itemsToCreate.length > 0) {
@@ -1457,12 +1483,6 @@ const ItemList = () => {
 
             const importedByCode = new Map(importedItems.map((item) => [item.item_code, item]));
             const importedByItemId = new Map<string, ImportedInventoryItem>();
-            (existingItems ?? []).forEach((item) => {
-                const importedItem = importedByCode.get(String(item.item_code).toUpperCase());
-                if (item.id != null && importedItem) {
-                    importedByItemId.set(String(item.id), importedItem);
-                }
-            });
             createdItems.forEach((item) => {
                 const importedItem = importedByCode.get(String(item.item_code).toUpperCase());
                 if (item.id != null && importedItem) {
@@ -1471,7 +1491,6 @@ const ItemList = () => {
             });
 
             const allImportedItemIds = [
-                ...(existingItems ?? []).map((item) => item.id),
                 ...createdItems.map((item) => item.id),
             ].filter((id): id is string | number => id != null);
 
