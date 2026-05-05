@@ -555,7 +555,7 @@ const EmergencyMovementCreatePage = () => {
         <CreateView className="item-view">
             <CreateViewHeader resource="emergencies" title="Emergencies" />
             <div className="my-4 flex items-center">
-                <Card className="w-full max-w-7xl mx-auto item-form-card gap-0 overflow-hidden border-border/80 shadow-sm py-0">
+                <Card className="w-full max-w-7xl mx-auto item-form-card gap-0 overflow-visible border-border/80 shadow-sm py-0">
                     <CardHeader className="border-b pt-6">
                         <CardTitle>Emergency Transaction</CardTitle>
                         <CardDescription>
@@ -616,7 +616,7 @@ const EmergencyMovementCreatePage = () => {
                                         className="pl-9 bg-background"
                                     />
                                     {itemSearch.trim() ? (
-                                        <div className="absolute left-0 right-0 top-full z-20 mt-1 overflow-hidden rounded-md border bg-background shadow-md">
+                                        <div className="absolute left-0 right-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-background shadow-md">
                                             {isCatalogLoading ? (
                                                 <p className="px-3 py-2 text-sm text-muted-foreground">Loading items...</p>
                                             ) : lookupError ? (
