@@ -1,5 +1,6 @@
 import UploadWidget from "@/components/upload-widget";
 import { Button } from "@/components/ui/button";
+import type { ReactNode } from "react";
 
 type ItemImportPanelProps = {
   file: File | null;
@@ -9,6 +10,8 @@ type ItemImportPanelProps = {
   onCancel?: () => void;
   onContinue?: () => void;
   continueDisabled?: boolean;
+  continueLabel?: string;
+  preview?: ReactNode;
   showFooter?: boolean;
 };
 
@@ -20,6 +23,8 @@ export const ItemImportPanel = ({
   onCancel,
   onContinue,
   continueDisabled = false,
+  continueLabel = "Continue",
+  preview,
   showFooter = true,
 }: ItemImportPanelProps) => {
   return (
@@ -31,13 +36,15 @@ export const ItemImportPanel = ({
 
       <UploadWidget value={file} onFileChange={onFileChange} />
 
+      {preview}
+
       {showFooter ? (
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
           <Button type="button" variant="outline" onClick={onCancel} className="w-full sm:w-auto">
             Cancel
           </Button>
           <Button type="button" onClick={onContinue} disabled={continueDisabled} className="w-full sm:w-auto">
-            Continue
+            {continueLabel}
           </Button>
         </div>
       ) : null}
