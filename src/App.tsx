@@ -30,6 +30,7 @@ import UserList from "./pages/users/list";
 import ProfilePage from "./pages/profile";
 import ItemMovementListPage from "./pages/item-movements/list";
 import ItemMovementCreatePage from "./pages/item-movements/create";
+import BatchUploadMctPage from "./pages/item-movements/batch-upload";
 import ItemMovementHistoryPage from "./pages/item-movements/history";
 import EmergencyMovementListPage from "./pages/item-movements/emergencies-list";
 import EmergencyMovementCreatePage from "./pages/item-movements/emergencies-create";
@@ -180,6 +181,7 @@ function App() {
 								</Route>
 								<Route path="mct" element={<ItemMovementListPage />} />
 								<Route path="mct/create" element={<ItemMovementCreatePage />} />
+								<Route path="mct/batch-upload" element={<BatchUploadMctPage />} />
 								<Route path="mct/history" element={<ItemMovementHistoryPage />} />
 								<Route path="emergency" element={<EmergencyMovementListPage />} />
 								<Route path="emergency/create" element={<EmergencyMovementCreatePage />} />
@@ -205,6 +207,7 @@ function App() {
 									if (pathname === "/profile") return "Profile | Warehouse";
 									if (pathname === "/mct") return "MCT | Warehouse";
 									if (pathname === "/mct/create") return "Create MCT | Warehouse";
+									if (pathname === "/mct/batch-upload") return "Batch Upload MCTs | Warehouse";
 									if (pathname === "/mct/history") return "MCT History | Warehouse";
 									if (pathname === "/emergency") return "Emergency | Warehouse";
 									if (pathname === "/emergency/create") return "Create Emergency | Warehouse";

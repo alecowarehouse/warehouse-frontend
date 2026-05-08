@@ -1,5 +1,5 @@
 import { CreateView, CreateViewHeader } from "@/components/refine-ui/views/create-view";
-import UploadWidget from "@/components/upload-widget";
+import MultiUploadWidget from "@/components/multi-upload-widget";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -35,8 +35,9 @@ import * as XLSX from "xlsx";
 import { supabaseClient } from "@/providers/supabase-client";
 import { useGetIdentity, useGo, useInvalidate, useNotification } from "@refinedev/core";
 import { Badge } from "@/components/ui/badge";
+import BatchUploadMctPage from "./batch-upload";
 
-type MaterialChargeTicketHeader = {
+export type MaterialChargeTicketHeader = {
     district: string;
     department: string;
     requestNumber: string;
@@ -51,7 +52,7 @@ type MaterialChargeTicketHeader = {
     notes: string;
 };
 
-type MaterialChargeTicketItem = {
+export type MaterialChargeTicketItem = {
     id: string;
     item_code: string;
     particulars: string;
@@ -76,7 +77,7 @@ type AvailabilityInfo = {
     deductFrom?: "ending_qty" | "buffer_stock";
 };
 
-const EMPTY_HEADER: MaterialChargeTicketHeader = {
+export const EMPTY_HEADER: MaterialChargeTicketHeader = {
     district: "",
     department: "",
     requestNumber: "",
@@ -157,9 +158,9 @@ const normalizeCell = (value: string) =>
         .replace(/\s+/g, "")
         .replace(/[^a-z0-9#/.:_-]/g, "");
 
-const normalizeItemCode = (value: string) => value.trim().toUpperCase();
+export const normalizeItemCode = (value: string) => value.trim().toUpperCase();
 
-const normalizeRows = (rows: Array<Array<string | number | null | undefined>>) =>
+export const normalizeRows = (rows: Array<Array<string | number | null | undefined>>) =>
     rows
         .map((row) => row.map((cell) => String(cell ?? "").trim()))
         .filter((row) => row.some((cell) => cell.length > 0));
@@ -294,7 +295,7 @@ const parseItemsFromTable = (rows: string[][]) => {
     return items;
 };
 
-const parseCsvRows = (text: string) => {
+export const parseCsvRows = (text: string) => {
     const rows: string[][] = [];
     let current: string[] = [];
     let field = "";
@@ -350,7 +351,7 @@ const parseCsvRows = (text: string) => {
     return rows;
 };
 
-const parseRowsToTicket = (rows: string[][]) => {
+export const parseRowsToTicket = (rows: string[][]) => {
     if (!rows.length) {
         return { header: { ...EMPTY_HEADER }, items: [] };
     }
@@ -361,7 +362,7 @@ const parseRowsToTicket = (rows: string[][]) => {
     return { header, items };
 };
 
-const formatDecimal = (value: number | null) => {
+export const formatDecimal = (value: number | null) => {
     if (value == null || Number.isNaN(value)) return "-";
     return value.toLocaleString("en-US", {
         minimumFractionDigits: 2,
@@ -369,18 +370,19 @@ const formatDecimal = (value: number | null) => {
     });
 };
 
-const formatC2 = (value: number | null) => {
+export const formatC2 = (value: number | null) => {
     if (value == null || Number.isNaN(value)) return "-";
     return value.toLocaleString("en-US", {
         maximumFractionDigits: 0,
     });
 };
 
-const sumNumbers = (values: Array<number | null>) =>
+export const sumNumbers = (values: Array<number | null>) =>
     values.reduce<number>((acc, value) => (value == null || Number.isNaN(value) ? acc : acc + value), 0);
 
 const IssueReturnCreatePage = () => {
     const [file, setFile] = useState<File | null>(null);
+    const [uploadedFiles, setUploadedFiles] = useState<File[]>([]);
     const [ticketHeader, setTicketHeader] = useState<MaterialChargeTicketHeader | null>(null);
     const [ticketItems, setTicketItems] = useState<MaterialChargeTicketItem[]>([]);
     const [parseError, setParseError] = useState<string | null>(null);
@@ -396,6 +398,10 @@ const IssueReturnCreatePage = () => {
     const { open } = useNotification();
     const invalidate = useInvalidate();
     const go = useGo();
+
+    useEffect(() => {
+        setFile(uploadedFiles[0] ?? null);
+    }, [uploadedFiles]);
 
     useEffect(() => {
         if (!file) {
@@ -741,11 +747,11 @@ const IssueReturnCreatePage = () => {
                 const message = error.message ?? "Unable to save MCT.";
                 const duplicate = parseMissingCodes(message, "duplicate_mct:");
                 if (duplicate.length > 0) {
-                const errors = [`Duplicate MCT/Rel # detected: ${duplicate.join(", ")}`];
-                setValidationErrors(errors);
-                setErrorDialogOpen(true);
-                return;
-            }
+                    const errors = [`Duplicate MCT/Rel # detected: ${duplicate.join(", ")}`];
+                    setValidationErrors(errors);
+                    setErrorDialogOpen(true);
+                    return;
+                }
                 setValidationErrors([message]);
                 setErrorDialogOpen(true);
                 return;
@@ -771,6 +777,10 @@ const IssueReturnCreatePage = () => {
         }
     };
 
+    if (uploadedFiles.length > 1) {
+        return <BatchUploadMctPage files={uploadedFiles} onFilesChange={setUploadedFiles} />;
+    }
+
     return (
         <CreateView className="item-view">
             <CreateViewHeader title="MCT" />
@@ -783,7 +793,7 @@ const IssueReturnCreatePage = () => {
                         </CardDescription>
                     </CardHeader>
                     <CardContent className="pt-5 space-y-5">
-                        <UploadWidget value={file} onFileChange={setFile} />
+                        <MultiUploadWidget value={uploadedFiles} onFilesChange={setUploadedFiles} />
                         {parseStatus ? <p className="text-sm text-muted-foreground">{parseStatus}</p> : null}
                         {parseError ? <p className="text-sm text-destructive">{parseError}</p> : null}
                         <div className="rounded-lg border bg-muted/10 p-3 space-y-4 mb-4">

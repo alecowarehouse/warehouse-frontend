@@ -163,6 +163,82 @@ type ItemImportPreview = {
 };
 
 type ExportFormat = "pdf" | "excel";
+type EditableInventoryField = "unit_cost" | "buffer_stock" | "starting_qty" | "ending_qty";
+
+type EditableInventoryCellProps = {
+    ariaLabel: string;
+    field: EditableInventoryField;
+    isCurrency?: boolean;
+    item: ItemInventoryRowWithId;
+    value: number | null | undefined;
+    onSave: (item: ItemInventoryRowWithId, field: EditableInventoryField, value: number | null) => Promise<boolean>;
+};
+
+const EditableInventoryCell = ({
+    ariaLabel,
+    field,
+    isCurrency = false,
+    item,
+    value,
+    onSave,
+}: EditableInventoryCellProps) => {
+    const [draft, setDraft] = useState(value == null ? "" : String(value));
+    const [isSaving, setIsSaving] = useState(false);
+
+    useEffect(() => {
+        setDraft(value == null ? "" : String(value));
+    }, [value]);
+
+    const commit = useCallback(async () => {
+        const trimmedDraft = draft.trim();
+        const nextValue = trimmedDraft === "" ? null : Number(trimmedDraft);
+
+        if (trimmedDraft !== "" && !Number.isFinite(nextValue)) {
+            setDraft(value == null ? "" : String(value));
+            return;
+        }
+
+        if (nextValue === (value ?? null)) return;
+
+        setIsSaving(true);
+        let didSave = false;
+        try {
+            didSave = await onSave(item, field, nextValue);
+        } catch {
+            didSave = false;
+        } finally {
+            setIsSaving(false);
+        }
+
+        if (!didSave) {
+            setDraft(value == null ? "" : String(value));
+        }
+    }, [draft, field, item, onSave, value]);
+
+    return (
+        <Input
+            aria-label={ariaLabel}
+            className="h-8 min-w-20 border-transparent bg-transparent px-2 text-right tabular-nums shadow-none hover:border-input hover:bg-background focus:border-input focus:bg-background"
+            disabled={isSaving}
+            inputMode={isCurrency ? "decimal" : "numeric"}
+            min={0}
+            onBlur={() => void commit()}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                    event.currentTarget.blur();
+                }
+                if (event.key === "Escape") {
+                    setDraft(value == null ? "" : String(value));
+                    event.currentTarget.blur();
+                }
+            }}
+            step={isCurrency ? 0.01 : 1}
+            type="number"
+            value={draft}
+        />
+    );
+};
 
 const isUuidLike = (value: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 
@@ -691,6 +767,69 @@ const ItemList = () => {
         updateRecord,
     ]);
 
+    const handleInlineInventorySave = useCallback(
+        async (
+            item: ItemInventoryRowWithId,
+            field: EditableInventoryField,
+            value: number | null
+        ) => {
+            const resolvedId = resolveItemId(item);
+            if (!resolvedId || !item.month || !item.year) {
+                open?.({
+                    type: "error",
+                    message: "Update failed",
+                    description: "Missing inventory record details for this row.",
+                });
+                return false;
+            }
+
+            if (value != null && value < 0) {
+                open?.({
+                    type: "error",
+                    message: "Update failed",
+                    description: "Inventory values must be zero or greater.",
+                });
+                return false;
+            }
+
+            if (field !== "unit_cost" && value != null && !Number.isInteger(value)) {
+                open?.({
+                    type: "error",
+                    message: "Update failed",
+                    description: "Quantity and buffer stock values must be whole numbers.",
+                });
+                return false;
+            }
+
+            const { error } = await supabaseClient
+                .from("inventory_records")
+                .update({ [field]: value })
+                .eq("month", item.month)
+                .eq("year", item.year)
+                .eq("item_id", resolvedId);
+
+            if (error) {
+                open?.({
+                    type: "error",
+                    message: "Update failed",
+                    description: getErrorMessage(error),
+                });
+                return false;
+            }
+
+            open?.({
+                type: "success",
+                message: "Inventory updated",
+                description: "The table value has been saved.",
+            });
+            itemTable.refineCore.tableQuery.refetch();
+            invalidate({ resource: "items_inventory_all", invalidates: ["list"] });
+            invalidate({ resource: "inventory_records", invalidates: ["list"] });
+            return true;
+        },
+        [invalidate, open, resolveItemId]
+    );
+
     const handleCopyItemCode = useCallback(
         async (itemCode: string) => {
             try {
@@ -1020,10 +1159,15 @@ const ItemList = () => {
                             Unit Cost
                         </p>
                     ),
-                    cell: ({ getValue }) => (
-                        <span className="text-right tabular-nums text-foreground">
-                            {formatMoney(getValue<number | null>())}
-                        </span>
+                    cell: ({ row, getValue }) => (
+                        <EditableInventoryCell
+                            ariaLabel={`Unit cost for ${row.original.item_code}`}
+                            field="unit_cost"
+                            isCurrency
+                            item={row.original}
+                            onSave={handleInlineInventorySave}
+                            value={getValue<number | null>()}
+                        />
                     ),
                 },
                 {
@@ -1035,10 +1179,14 @@ const ItemList = () => {
                             Buffer Stock
                         </p>
                     ),
-                    cell: ({ getValue }) => (
-                        <span className="text-right tabular-nums text-foreground">
-                            {formatNumber(getValue<number | null>())}
-                        </span>
+                    cell: ({ row, getValue }) => (
+                        <EditableInventoryCell
+                            ariaLabel={`Buffer stock for ${row.original.item_code}`}
+                            field="buffer_stock"
+                            item={row.original}
+                            onSave={handleInlineInventorySave}
+                            value={getValue<number | null>()}
+                        />
                     ),
                 },
                 {
@@ -1050,10 +1198,14 @@ const ItemList = () => {
                             Starting Qty.
                         </p>
                     ),
-                    cell: ({ getValue }) => (
-                        <span className="text-right tabular-nums text-foreground">
-                            {formatNumber(getValue<number | null>())}
-                        </span>
+                    cell: ({ row, getValue }) => (
+                        <EditableInventoryCell
+                            ariaLabel={`Starting quantity for ${row.original.item_code}`}
+                            field="starting_qty"
+                            item={row.original}
+                            onSave={handleInlineInventorySave}
+                            value={getValue<number | null>()}
+                        />
                     ),
                 },
                 {
@@ -1065,10 +1217,14 @@ const ItemList = () => {
                             Ending Qty.
                         </p>
                     ),
-                    cell: ({ getValue }) => (
-                        <span className="text-right tabular-nums text-foreground">
-                            {formatNumber(getValue<number | null>())}
-                        </span>
+                    cell: ({ row, getValue }) => (
+                        <EditableInventoryCell
+                            ariaLabel={`Ending quantity for ${row.original.item_code}`}
+                            field="ending_qty"
+                            item={row.original}
+                            onSave={handleInlineInventorySave}
+                            value={getValue<number | null>()}
+                        />
                     ),
                 },
                 {
@@ -1124,6 +1280,7 @@ const ItemList = () => {
                 deletingItemId,
                 handleCopyItemCode,
                 handleActionContentRef,
+                handleInlineInventorySave,
                 isAdmin,
                 openEditDialog,
                 openHistoryDialog,
