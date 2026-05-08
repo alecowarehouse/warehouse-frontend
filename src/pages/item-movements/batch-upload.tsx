@@ -440,7 +440,7 @@ const BatchUploadMctPage = ({ files: controlledFiles }: BatchUploadMctPageProps)
                         {parseStatus ? <p className="text-sm text-muted-foreground">{parseStatus}</p> : null}
                         {parseError ? <p className="text-sm text-destructive">{parseError}</p> : null}
 
-                        <div className="grid gap-3 rounded-lg border bg-muted/10 p-3 sm:grid-cols-3">
+                        <div className="grid gap-3 rounded-lg border-none bg-muted/10 sm:grid-cols-3">
                             <div className="rounded-md border bg-background px-3 py-2">
                                 <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Documents</p>
                                 <p className="text-lg font-semibold">{tickets.length}</p>
@@ -455,7 +455,7 @@ const BatchUploadMctPage = ({ files: controlledFiles }: BatchUploadMctPageProps)
                             </div>
                         </div>
 
-                        <div className="overflow-x-auto rounded-md border bg-background">
+                        <div className="overflow-x-auto rounded-md border bg-background mb-5">
                             <Table>
                                 <TableHeader>
                                     <TableRow>
