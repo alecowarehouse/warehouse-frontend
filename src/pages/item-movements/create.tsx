@@ -457,12 +457,17 @@ const getReportColumnMap = (headerRow: string[]): ReportColumnMap | null => {
     };
 };
 
-const isReportTicketRow = (row: string[]) => /^rel[-\w]+/i.test(row[0] ?? "");
+const isReportTicketRow = (row: string[]) => /^rel[-#/]\w+/i.test((row[0] ?? "").trim());
 const isReportItemRow = (row: string[]) => /^\d+\.?$/.test((row[0] ?? "").trim());
 
 const isReportMetadataRow = (row: string[]) => {
     const firstCell = (row[0] ?? "").trim().toLowerCase();
-    return firstCell.startsWith("notes/serial") || firstCell.startsWith("ref mct") || firstCell.startsWith("s#");
+    return (
+        firstCell.startsWith("released by district") ||
+        firstCell.startsWith("notes/serial") ||
+        firstCell.startsWith("ref mct") ||
+        firstCell.startsWith("s#")
+    );
 };
 
 const getTrailingNumericIndexes = (row: string[]) =>
@@ -567,6 +572,16 @@ const parseMultiTicketReport = (rows: string[][], file: File) => {
             return;
         }
 
+        if (isReportMetadataRow(row)) {
+            const note = compactJoin(row);
+            if (currentTicket) {
+                currentTicket.header.notes = compactJoin([currentTicket.header.notes, note]);
+            } else {
+                pendingNotes.push(note);
+            }
+            return;
+        }
+
         if (isReportTicketRow(row)) {
             flushTicket();
             currentTicket = {
@@ -587,15 +602,6 @@ const parseMultiTicketReport = (rows: string[][], file: File) => {
                 currentTicket.items.push(item);
             }
             return;
-        }
-
-        if (isReportMetadataRow(row)) {
-            const note = compactJoin(row);
-            if (currentTicket) {
-                currentTicket.header.notes = compactJoin([currentTicket.header.notes, note]);
-            } else {
-                pendingNotes.push(note);
-            }
         }
     });
 
