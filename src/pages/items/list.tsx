@@ -149,6 +149,7 @@ type ImportedInventoryItem = {
     description: string;
     type: string;
     unit_cost: number | null;
+    starting_qty: number | null;
     rowNumber: number;
 };
 
@@ -371,6 +372,7 @@ const ITEM_IMPORT_HEADER_MAP: Record<string, keyof ImportedInventoryItem> = {
     type: "type",
     unitcost: "unit_cost",
     unitcostphp: "unit_cost",
+    district2onhand: "starting_qty",
 };
 
 const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPreview => {
@@ -411,10 +413,12 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             description: "",
             type: "",
             unit_cost: null,
+            starting_qty: null,
             rowNumber,
         };
         let hasMappedValue = false;
         let unitCostParseError = false;
+        let startingQtyParseError = false;
 
         cells.forEach((cell, colIndex) => {
             const key = headerInfo.headerMap[colIndex];
@@ -423,6 +427,11 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             if (key === "unit_cost") {
                 importedItem.unit_cost = parseImportNumber(cell);
                 unitCostParseError = importedItem.unit_cost == null;
+            } else if (key === "starting_qty") {
+                importedItem.starting_qty = parseImportNumber(cell);
+                startingQtyParseError =
+                    importedItem.starting_qty == null ||
+                    !Number.isInteger(importedItem.starting_qty);
             } else if (key === "item_code" || key === "description" || key === "type") {
                 importedItem[key] = cell;
             }
@@ -450,6 +459,14 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             continue;
         }
 
+        if (startingQtyParseError) {
+            errors.push({
+                rowNumber,
+                message: "Invalid District 2 on-hand quantity.",
+            });
+            continue;
+        }
+
         if (itemsByCode.has(itemCode)) {
             errors.push({
                 rowNumber,
@@ -463,6 +480,7 @@ const parseImportedInventoryItems = (rows: Array<Array<unknown>>): ItemImportPre
             description,
             type,
             unit_cost: importedItem.unit_cost,
+            starting_qty: importedItem.starting_qty,
             rowNumber,
         });
     }
@@ -1664,20 +1682,38 @@ const ItemList = () => {
 
                 if (existingRecordsError) throw existingRecordsError;
 
-                const unitCostUpdateResults = await Promise.all(
+                const inventoryUpdateResults = await Promise.all(
                     (existingRecords ?? [])
-                        .filter((record) => importedByItemId.get(String(record.item_id))?.unit_cost != null)
-                        .map((record) =>
-                            supabaseClient
+                        .map((record) => {
+                            const importedItem = importedByItemId.get(String(record.item_id));
+                            if (!importedItem) return null;
+
+                            const values: {
+                                unit_cost?: number | null;
+                                starting_qty?: number;
+                                ending_qty?: number;
+                            } = {};
+
+                            if (importedItem.unit_cost != null) {
+                                values.unit_cost = importedItem.unit_cost;
+                            }
+
+                            if (importedItem.starting_qty != null) {
+                                values.starting_qty = importedItem.starting_qty;
+                                values.ending_qty = importedItem.starting_qty;
+                            }
+
+                            if (Object.keys(values).length === 0) return null;
+
+                            return supabaseClient
                                 .from("inventory_records")
-                                .update({
-                                    unit_cost: importedByItemId.get(String(record.item_id))?.unit_cost ?? null,
-                                })
-                                .eq("id", record.id)
-                        )
+                                .update(values)
+                                .eq("id", record.id);
+                        })
+                        .filter((request): request is NonNullable<typeof request> => request != null)
                 );
-                const unitCostUpdateError = unitCostUpdateResults.find((result) => result.error)?.error;
-                if (unitCostUpdateError) throw unitCostUpdateError;
+                const inventoryUpdateError = inventoryUpdateResults.find((result) => result.error)?.error;
+                if (inventoryUpdateError) throw inventoryUpdateError;
 
                 const existingRecordItemIds = new Set(
                     (existingRecords ?? []).map((record) => String(record.item_id))
@@ -1688,8 +1724,8 @@ const ItemList = () => {
                         item_id: itemId,
                         month,
                         year,
-                        starting_qty: 0,
-                        ending_qty: 0,
+                        starting_qty: importedByItemId.get(String(itemId))?.starting_qty ?? 0,
+                        ending_qty: importedByItemId.get(String(itemId))?.starting_qty ?? 0,
                         buffer_stock: 0,
                         unit_cost: importedByItemId.get(String(itemId))?.unit_cost ?? null,
                     }));
